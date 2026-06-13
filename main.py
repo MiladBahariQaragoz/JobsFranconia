@@ -2,6 +2,9 @@ import asyncio
 import logging
 import signal
 import sys
+import os
+import threading
+import http.server
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -20,8 +23,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from admin_logger import TelegramAdminHandler
+admin_handler = TelegramAdminHandler()
+admin_handler.setLevel(logging.ERROR)
+admin_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+logging.getLogger().addHandler(admin_handler)
+
 if config.DEBUG_MODE:
     logger.info("=== DEBUG MODE ENABLED — messages will be filtered and printed only ===")
+
+from telethon.sessions import MemorySession
 
 client = TelegramClient(
     StringSession(config.TELEGRAM_SESSION_STR),
@@ -29,6 +40,23 @@ client = TelegramClient(
     config.TELEGRAM_API_HASH,
 )
 
+bot_client = TelegramClient(
+    MemorySession(),
+    config.TELEGRAM_API_ID,
+    config.TELEGRAM_API_HASH,
+)
+
+@bot_client.on(events.NewMessage(pattern="/status"))
+async def handle_status_cmd(event):
+    if config.ADMIN_ID and str(event.sender_id) != str(config.ADMIN_ID):
+        return
+    await event.reply("✅ **Jobs Franconia Bot** is running and listening for new posts!")
+
+@bot_client.on(events.NewMessage(pattern="/ping"))
+async def handle_ping_cmd(event):
+    if config.ADMIN_ID and str(event.sender_id) != str(config.ADMIN_ID):
+        return
+    await event.reply("Pong! 🏓")
 
 
 @client.on(events.NewMessage(chats=config.SOURCE_CHANNEL))
@@ -58,13 +86,48 @@ async def handle_new_post(event):
     )
 
     logger.info("Successfully forwarded post id=%s", message.id)
+    
+    # Debug feature: Send a copy to the admin
+    if config.ADMIN_ID and config.TELEGRAM_BOT_TOKEN:
+        try:
+            await bot_client.send_message(
+                int(config.ADMIN_ID), 
+                f"🐛 **DEBUG: Message passed filter and was forwarded!**\n\n**Original:**\n{original_text}\n\n**Translated:**\n{translated}"
+            )
+        except Exception as e:
+            logger.error("Failed to forward debug message to admin: %s", e)
 
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = http.server.HTTPServer(("0.0.0.0", port), http.server.SimpleHTTPRequestHandler)
+    server.serve_forever()
 
 async def main():
-    await client.start()
-    me = await client.get_me()
-    logger.info("Logged in as %s (id=%s)", me.username or me.first_name, me.id)
+    if "PORT" in os.environ:
+        threading.Thread(target=run_dummy_server, daemon=True).start()
+        logger.info("Dummy HTTP server started for Cloud Run.")
 
+    try:
+        await client.start()
+        me = await client.get_me()
+        logger.info("Logged in as %s (id=%s)", me.username or me.first_name, me.id)
+        
+        if config.TELEGRAM_BOT_TOKEN:
+            await bot_client.start(bot_token=config.TELEGRAM_BOT_TOKEN)
+            bot_me = await bot_client.get_me()
+            logger.info("Bot Admin Dashboard started as %s", bot_me.username)
+            if config.ADMIN_ID:
+                await bot_client.send_message(int(config.ADMIN_ID), "🚀 Bot successfully started and deployed!")
+    except Exception as e:
+        logger.error("Failed to start Telegram Clients: %s", e)
+        if "PORT" in os.environ:
+            logger.info("Keeping process alive for Cloud Run health checks...")
+            while True:
+                await asyncio.sleep(3600)
+        return
+
+    # Resolve the channel entity at startup so Telethon can match incoming updates.
     # Resolve the channel entity at startup so Telethon can match incoming updates.
     try:
         entity = await client.get_entity(config.SOURCE_CHANNEL)
@@ -86,6 +149,8 @@ async def main():
 async def shutdown():
     logger.info("Shutting down...")
     await client.disconnect()
+    if config.TELEGRAM_BOT_TOKEN:
+        await bot_client.disconnect()
 
 
 if __name__ == "__main__":

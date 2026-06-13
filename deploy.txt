@@ -1,0 +1,6 @@
+The following APIs are not enabled on project [jobs-franconia-bot-01]:
+        artifactregistry.googleapis.com
+        cloudbuild.googleapis.com
+
+Do you want enable these APIs to continue (this will take a few minutes)? (Y/n)?
+  

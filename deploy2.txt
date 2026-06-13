@@ -1,0 +1,13 @@
+Building using Dockerfile and deploying container to Cloud Run service [jobs-bot] in project [jobs-franconia-bot-01] region [europe-west3]
+Building and deploying new service...
+Validating configuration..........done
+Creating Container Repository....................................................................................................................................................................................................................done
+Uploading sources...................................done
+Building Container..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................done
+Setting IAM Policy....................done
+Creating Revision..............................................................................failed
+Deployment failed
+ERROR: (gcloud.run.deploy) The user-provided container failed to start and listen on the port defined provided by the PORT=8080 environment variable within the allocated timeout. This can happen when the container port is misconfigured or if the timeout is too short. The health check timeout can be extended. Logs for this revision might contain more information.
+
+Logs URL: https://console.cloud.google.com/logs/viewer?project=jobs-franconia-bot-01&resource=cloud_run_revision/service_name/jobs-bot/revision_name/jobs-bot-00001-8lh&advancedFilter=resource.type%3D%22cloud_run_revision%22%0Aresource.labels.service_name%3D%22jobs-bot%22%0Aresource.labels.revision_name%3D%22jobs-bot-00001-8lh%22 
+For more troubleshooting guidance, see https://cloud.google.com/run/docs/troubleshooting#container-failed-to-start

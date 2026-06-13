@@ -15,12 +15,13 @@ def _optional(name: str, default: str = "") -> str:
 # Set DEBUG_MODE=true to read and filter messages locally without translating or posting.
 DEBUG_MODE = _optional("DEBUG_MODE", "").lower() in ("1", "true", "yes")
 
-TELEGRAM_API_ID      = int(_require("TELEGRAM_API_ID"))
-TELEGRAM_API_HASH    = _require("TELEGRAM_API_HASH")
-TELEGRAM_SESSION_STR = _require("TELEGRAM_SESSION_STRING")
-SOURCE_CHANNEL       = _require("SOURCE_CHANNEL")
+TELEGRAM_API_ID      = int(_optional("TELEGRAM_API_ID", "0")) if DEBUG_MODE else int(_require("TELEGRAM_API_ID"))
+TELEGRAM_API_HASH    = _optional("TELEGRAM_API_HASH") if DEBUG_MODE else _require("TELEGRAM_API_HASH")
+TELEGRAM_SESSION_STR = _optional("TELEGRAM_SESSION_STRING") if DEBUG_MODE else _require("TELEGRAM_SESSION_STRING")
+SOURCE_CHANNEL       = _optional("SOURCE_CHANNEL", "dummy") if DEBUG_MODE else _require("SOURCE_CHANNEL")
 
 # These are only required in production (not debug) mode.
 TELEGRAM_BOT_TOKEN   = _optional("TELEGRAM_BOT_TOKEN")   if DEBUG_MODE else _require("TELEGRAM_BOT_TOKEN")
 DEST_CHANNEL         = _optional("DEST_CHANNEL")          if DEBUG_MODE else _require("DEST_CHANNEL")
 GOOGLE_CLOUD_PROJECT = _optional("GOOGLE_CLOUD_PROJECT")  if DEBUG_MODE else _require("GOOGLE_CLOUD_PROJECT")
+ADMIN_ID             = _optional("ADMIN_ID") # Telegram User ID for admin dashboard and error logs
