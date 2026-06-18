@@ -95,18 +95,22 @@ async def handle_new_post(event):
         None, translate_uk_to_fa, original_text
     )
 
-    await asyncio.get_event_loop().run_in_executor(
+    sent = await asyncio.get_event_loop().run_in_executor(
         None, post_to_channel, translated, dest
     )
 
-    logger.info("Successfully forwarded post id=%s to %s", message.id, dest)
-    
-    # Debug feature: Send a copy to the admin
+    if sent:
+        logger.info("Successfully forwarded post id=%s to %s", message.id, dest)
+    else:
+        logger.error("Post id=%s was NOT delivered to %s (see poster logs)", message.id, dest)
+
+    # Debug feature: Send a copy to the admin, reflecting the real delivery status.
     if config.ADMIN_ID and config.TELEGRAM_BOT_TOKEN:
+        status = "was forwarded ✅" if sent else "FAILED to send ❌"
         try:
             await bot_client.send_message(
-                int(config.ADMIN_ID), 
-                f"🐛 **DEBUG: Message passed filter and was forwarded!**\n\n**Original:**\n{original_text}\n\n**Translated:**\n{translated}"
+                int(config.ADMIN_ID),
+                f"🐛 DEBUG: Message passed filter and {status}\n\nOriginal:\n{original_text}\n\nTranslated:\n{translated}"
             )
         except Exception as e:
             logger.error("Failed to forward debug message to admin: %s", e)

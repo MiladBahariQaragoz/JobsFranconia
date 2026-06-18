@@ -55,17 +55,18 @@ def _html_to_plain(text: str) -> str:
     return html.unescape(text)
 
 
-def post_to_channel(text: str, dest=None) -> None:
+def post_to_channel(text: str, dest=None) -> bool:
     """Send a message to a destination channel via the Bot API.
 
     `dest` is the chat_id/@username to post to; defaults to config.DEST_CHANNEL
     for backwards compatibility. Sent as HTML (translator.py emits a labelled
     <a> link and escapes everything else). Fails safe: a Telegram rejection is
     logged, and the post is retried as plain text so it is not silently lost.
+    Returns True only if the message was actually delivered.
     """
     if not text or not text.strip():
         logger.warning("Skipping empty message")
-        return
+        return False
 
     if dest is None:
         dest = config.DEST_CHANNEL
@@ -73,7 +74,7 @@ def post_to_channel(text: str, dest=None) -> None:
     ok, detail = _send(dest, text, parse_mode="HTML")
     if ok:
         logger.info("Posted to %s — message_id=%s", dest, detail)
-        return
+        return True
 
     # HTML was rejected (most often a bad entity). Log the real reason (visible
     # in Cloud Run logs), then retry as plain text so the post still lands (link
@@ -83,5 +84,7 @@ def post_to_channel(text: str, dest=None) -> None:
     ok2, detail2 = _send(dest, plain, parse_mode=None)
     if ok2:
         logger.info("Posted to %s as plain text — message_id=%s", dest, detail2)
-    else:
-        logger.error("Plain-text retry to %s also failed — %s", dest, detail2)
+        return True
+
+    logger.error("Failed to deliver to %s (HTML and plain text both rejected) — %s", dest, detail2)
+    return False
