@@ -23,12 +23,13 @@ def post_to_channel(text: str, dest=None) -> None:
     if dest is None:
         dest = config.DEST_CHANNEL
 
-    # Plain text (no parse_mode): the post format carries no bold/inline links,
-    # and bare '&' / '<' in company names and application URLs would otherwise
-    # break Telegram's HTML entity parser. URLs still auto-link in plain text.
+    # HTML parse mode: the post carries a labelled hyperlink (<a>) for the
+    # application link. translator.py escapes every other dynamic value, so bare
+    # '&' / '<' in company names or URLs can't break Telegram's entity parser.
     payload = json.dumps({
         "chat_id": dest,
         "text": text,
+        "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }).encode("utf-8")
 

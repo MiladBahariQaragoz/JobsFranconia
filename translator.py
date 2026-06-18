@@ -181,33 +181,41 @@ def translate_uk_to_fa(text: str) -> str:
         if desc_text:
             desc_fa = _translate(desc_text, "fa")
 
-        # --- Assemble the final message (plain text) ---
+        # --- Assemble the final message (HTML) ---
+        # The post is sent with parse_mode=HTML, so every dynamic value is escaped
+        # and only the application link is emitted as an <a> tag — this lets the
+        # link show a clickable Persian label instead of a bare URL.
+        def esc(s: str) -> str:
+            return html.escape(s, quote=False)
+
         out = []
         if title:
-            out.append(title)
+            out.append(esc(title))
             out.append("")
 
         for marker in _TOP_ORDER:
             if marker == "📂":
                 if category_tag:
-                    out.append(f"📂 {_TOP_LABELS['📂']}: {category_tag}")
+                    out.append(f"📂 {_TOP_LABELS['📂']}: {esc(category_tag)}")
             elif top.get(marker):
-                out.append(f"{marker} {_TOP_LABELS[marker]}: {top[marker]}")
+                out.append(f"{marker} {_TOP_LABELS[marker]}: {esc(top[marker])}")
 
         if desc_fa:
             out.append("")
             out.append("📝 Beschreibung (توضیحات):")
             # RTL-pin each Persian line so a Latin/German first word can't flip it.
             for dl in desc_fa.split("\n"):
-                out.append((RLM + dl) if dl.strip() else dl)
+                out.append((RLM + esc(dl)) if dl.strip() else dl)
 
         if contact_url:
             out.append("")
-            out.append("👉 Kontakt:")
-            out.append(contact_url)
+            # Clickable Persian label linking to the original application URL.
+            href = html.escape(contact_url, quote=True)
+            out.append(f'{RLM}👉 <a href="{href}">لینک آگهی</a>')
 
         result_text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
         return result_text or text
     except Exception:
         logger.exception("Translation/transform failed — forwarding original text")
-        return text
+        # Escape so the fallback is still valid under parse_mode=HTML.
+        return html.escape(text)
