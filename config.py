@@ -72,8 +72,26 @@ def _build_routes(sources: list, dests: list) -> dict:
         f"(got {len(sources)} sources, {len(dests)} destinations)"
     )
 
-# Maps each source channel token -> its destination channel.
+# Maps each source channel token -> its Persian destination channel.
 ROUTES = _build_routes(SOURCE_CHANNELS, DEST_CHANNELS)
+
+# ---------------------------------------------------------------------------
+# Azerbaijani destinations (parallel to Persian, optional).
+#
+# Same rules as DEST_CHANNELS: one shared DEST_CHANNEL_AZ for all sources, or
+# DEST_CHANNELS_AZ paired 1:1 by position with SOURCE_CHANNELS. Leave both unset
+# to run Persian-only — no Azerbaijani posts are produced in that case.
+# ---------------------------------------------------------------------------
+_dest_az_raw = _optional("DEST_CHANNELS_AZ") or _optional("DEST_CHANNEL_AZ")
+DEST_CHANNELS_AZ = [_normalize_channel(c) for c in _split_list(_dest_az_raw)]
+ROUTES_AZ = _build_routes(SOURCE_CHANNELS, DEST_CHANNELS_AZ)
+
+# Per-language routing: target language code -> {source token -> dest channel}.
+# main.py fans each job posting out to every language that has a destination for
+# the originating source channel.
+LANG_ROUTES = {"fa": ROUTES}
+if ROUTES_AZ:
+    LANG_ROUTES["az"] = ROUTES_AZ
 
 # Fallback destination used if a message arrives from an unrouted chat.
 DEFAULT_DEST = DEST_CHANNELS[0] if DEST_CHANNELS else None

@@ -14,9 +14,9 @@ strings or tokens) — those are covered by `.gitignore`.
 ## What this is
 
 A **Telegram channel translator bot**. It listens to a Ukrainian source channel,
-keeps only structured job postings, translates them Ukrainian → Persian via Google
-Cloud Translation, and reposts them to a destination channel. Runs 24/7 on Google
-Cloud Run.
+keeps only structured job postings, translates them Ukrainian → Persian (and,
+optionally, Ukrainian → Azerbaijani in parallel) via Google Cloud Translation, and
+reposts each language to its own destination channel. Runs 24/7 on Google Cloud Run.
 
 Live deployment: project `jobs-franconia-bot-01`, region `europe-west3`, service
 `jobs-bot`. See [deploy.md](deploy.md) for deploy/ops steps.
@@ -28,14 +28,18 @@ A single event handler in [main.py](main.py) drives everything:
 ```
 new message in any SOURCE_CHANNELS
   → filter.is_job_posting()      # keep only structured job posts
-  → translator.translate_uk_to_fa()   # Google Translate, uk → fa
-  → poster.post_to_channel(text, dest)  # Telegram Bot API → routed DEST
+  → for each configured language (fa, az):
+      → translator.translate_uk(text, lang)   # Google Translate, uk → lang
+      → poster.post_to_channel(text, dest)    # Telegram Bot API → routed DEST
 ```
 
-Routing is many-to-many: `config.ROUTES` maps each source channel to a destination
-(paired 1:1, or all sources to one shared dest). `main.py` resolves each source to its
-chat id at startup into `ROUTE_BY_ID`, and the handler looks up the destination by the
-incoming `event.chat_id`.
+Routing is many-to-many **and** multi-language. `config.LANG_ROUTES` maps each
+language code (`fa`, optionally `az`) to a `{source → destination}` map (each built
+paired 1:1, or all sources to one shared dest). `main.py` resolves each source to its
+chat id at startup into `ROUTE_BY_ID`, where each entry is a list of `(lang, dest)`
+targets. The handler looks up the targets by the incoming `event.chat_id` and produces
+one post per language. Azerbaijani is opt-in: with no `DEST_CHANNEL(S)_AZ` set, only
+the Persian target exists and behavior is identical to before.
 
 Two Telethon clients run in one process:
 - **user client** (`client`) — a real user account via `StringSession`, used to
@@ -51,7 +55,7 @@ Two Telethon clients run in one process:
 | [main.py](main.py) | Entry point, event loop, both Telethon clients, admin commands, Cloud Run health server | The only place that wires modules together |
 | [config.py](config.py) | Loads + validates env vars | `_require` fails fast in prod; `_optional` relaxes in `DEBUG_MODE` |
 | [filter.py](filter.py) | `is_job_posting()` — emoji-marker heuristic | Pure function, no I/O. Easiest place to tune behavior |
-| [translator.py](translator.py) | `translate_uk_to_fa()` — Google Translate wrapper + pre/post-processing | Protects company/location/hashtags from translation; converts Markdown→HTML |
+| [translator.py](translator.py) | `translate_uk(text, lang)` — Google Translate wrapper + pre/post-processing | Per-language settings in `_LANGS` (target code, labels, RTL). `translate_uk_to_fa` is a back-compat alias. Top fields always go to German; only the description + labels are language-specific |
 | [poster.py](poster.py) | `post_to_channel()` — sends HTML message via Bot API | Uses stdlib `urllib`, no extra deps |
 | [admin_logger.py](admin_logger.py) | Logging handler that DMs ERROR/CRITICAL logs to the admin | Attached at ERROR level in main.py |
 | [auth.py](auth.py) | One-time local generator for the Telethon session string | **Run locally only** — Telegram blocks cloud-IP logins |
@@ -72,7 +76,8 @@ Run env vars / Secret Manager. Never commit `.env` or session strings.
 | `TELEGRAM_SESSION_STRING` | yes | Saved user session from `auth.py` |
 | `SOURCE_CHANNELS` | yes | Comma-separated channels to read from (@username or id). `SOURCE_CHANNEL` (single) still accepted |
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from @BotFather |
-| `DEST_CHANNELS` / `DEST_CHANNEL` | yes | Destinations (bot must be admin). Either one shared `DEST_CHANNEL` for all sources, or `DEST_CHANNELS` paired 1:1 by position with `SOURCE_CHANNELS` |
+| `DEST_CHANNELS` / `DEST_CHANNEL` | yes | Persian destinations (bot must be admin). Either one shared `DEST_CHANNEL` for all sources, or `DEST_CHANNELS` paired 1:1 by position with `SOURCE_CHANNELS` |
+| `DEST_CHANNELS_AZ` / `DEST_CHANNEL_AZ` | no | Azerbaijani destinations, same pairing rules as the Persian ones. Unset → Persian-only |
 | `GOOGLE_CLOUD_PROJECT` | yes | GCP project for Translation API |
 | `ADMIN_ID` | optional | Telegram user id for admin commands + error DMs |
 | `DEBUG_MODE` | optional | `true` → read+filter+print only; no translate/post. Relaxes required vars |

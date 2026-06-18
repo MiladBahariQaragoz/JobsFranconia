@@ -31,6 +31,27 @@ _TOP_ORDER = ["🏢", "💶", "📍"]
 
 RLM = chr(0x200F)  # U+200F RIGHT-TO-LEFT MARK — pins a line's base direction to RTL.
 
+# Per-target-language output settings. The top fields are always translated to
+# German; only the description language and the localized labels differ.
+#   code       — Google Translate target code for the description
+#   desc_label — localized word shown beside the German "Beschreibung" header
+#   link_label — localized clickable label for the application link
+#   rtl        — True for right-to-left scripts (pin each line with RLM)
+_LANGS = {
+    "fa": {  # Persian
+        "code": "fa",
+        "desc_label": "توضیحات",
+        "link_label": "لینک آگهی",
+        "rtl": True,
+    },
+    "az": {  # Azerbaijani (Latin script, left-to-right)
+        "code": "az",
+        "desc_label": "Təsvir",
+        "link_label": "Elan linki",
+        "rtl": False,
+    },
+}
+
 # Cyrillic block — used to decide whether a value still needs translating.
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 
@@ -71,13 +92,15 @@ def _value_after_colon(line: str) -> str:
     return parts[1].strip() if len(parts) == 2 else ""
 
 
-def translate_uk_to_fa(text: str) -> str:
+def translate_uk(text: str, lang: str = "fa") -> str:
     """Transform a Ukrainian/Russian job post into the channel format:
 
     German template + German values for the top (title, company, salary,
-    location, category), Persian for the job description, application link kept.
-    Returns the original text on failure so the event loop never crashes.
+    location, category), `lang` for the job description, application link kept.
+    `lang` is one of `_LANGS` ("fa" Persian, "az" Azerbaijani). Returns the
+    original text on failure so the event loop never crashes.
     """
+    cfg = _LANGS.get(lang, _LANGS["fa"])
     if not text or not text.strip():
         return text
     try:
@@ -169,11 +192,11 @@ def translate_uk_to_fa(text: str) -> str:
                 if marker in de:
                     top[marker] = de[marker]
 
-        # --- Description -> Persian ---
-        desc_fa = ""
+        # --- Description -> target language ---
+        desc_translated = ""
         desc_text = "\n".join(desc_lines).strip()
         if desc_text:
-            desc_fa = _translate(desc_text, "fa")
+            desc_translated = _translate(desc_text, cfg["code"])
 
         # --- Assemble the final message (HTML) ---
         # The post is sent with parse_mode=HTML, so every dynamic value is escaped
@@ -191,18 +214,23 @@ def translate_uk_to_fa(text: str) -> str:
             if top.get(marker):
                 out.append(f"{marker} {_TOP_LABELS[marker]}: {esc(top[marker])}")
 
-        if desc_fa:
+        if desc_translated:
             out.append("")
-            out.append("📝 Beschreibung (توضیحات):")
-            # RTL-pin each Persian line so a Latin/German first word can't flip it.
-            for dl in desc_fa.split("\n"):
-                out.append((RLM + esc(dl)) if dl.strip() else dl)
+            out.append(f"📝 Beschreibung ({cfg['desc_label']}):")
+            # For RTL targets, pin each line so a Latin/German first word can't
+            # flip it; LTR targets (e.g. Azerbaijani) need no marker.
+            for dl in desc_translated.split("\n"):
+                if cfg["rtl"]:
+                    out.append((RLM + esc(dl)) if dl.strip() else dl)
+                else:
+                    out.append(esc(dl))
 
         if contact_url:
             out.append("")
-            # Clickable Persian label linking to the original application URL.
+            # Clickable localized label linking to the original application URL.
             href = html.escape(contact_url, quote=True)
-            out.append(f'{RLM}👉 <a href="{href}">لینک آگهی</a>')
+            prefix = RLM if cfg["rtl"] else ""
+            out.append(f'{prefix}👉 <a href="{href}">{esc(cfg["link_label"])}</a>')
 
         result_text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
         return result_text or text
@@ -210,3 +238,8 @@ def translate_uk_to_fa(text: str) -> str:
         logger.exception("Translation/transform failed — forwarding original text")
         # Escape so the fallback is still valid under parse_mode=HTML.
         return html.escape(text)
+
+
+def translate_uk_to_fa(text: str) -> str:
+    """Backwards-compatible alias for the Persian translation."""
+    return translate_uk(text, "fa")

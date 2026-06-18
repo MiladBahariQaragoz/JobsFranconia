@@ -13,7 +13,7 @@ import config
 from filter import is_job_posting
 
 if not config.DEBUG_MODE:
-    from translator import translate_uk_to_fa
+    from translator import translate_uk
     from poster import post_to_channel
 
 logging.basicConfig(
@@ -59,9 +59,10 @@ async def handle_ping_cmd(event):
     await event.reply("Pong! 🏓")
 
 
-# Maps a resolved source chat id (Telethon marked peer id) -> destination channel.
-# Populated at startup in main() from config.ROUTES.
-ROUTE_BY_ID: dict[int, object] = {}
+# Maps a resolved source chat id (Telethon marked peer id) -> list of
+# (lang, destination) targets. Populated at startup in main() from
+# config.LANG_ROUTES, so each source can fan out to one post per language.
+ROUTE_BY_ID: dict[int, list[tuple[str, object]]] = {}
 
 
 @client.on(events.NewMessage())
@@ -73,7 +74,7 @@ async def handle_new_post(event):
         logger.debug("Ignoring message from non-source chat_id=%s", event.chat_id)
         return
 
-    dest = ROUTE_BY_ID[event.chat_id]
+    targets = ROUTE_BY_ID[event.chat_id]
     message = event.message
     original_text = message.text or message.message
     if not original_text:
@@ -84,36 +85,39 @@ async def handle_new_post(event):
         logger.info("Filtered out non-job-posting message (id=%s, src=%s)", message.id, event.chat_id)
         return
 
-    logger.info("Job posting received (id=%s, src=%s -> dest=%s): %.80s…",
-                message.id, event.chat_id, dest, original_text)
+    logger.info("Job posting received (id=%s, src=%s -> %d target(s)): %.80s…",
+                message.id, event.chat_id, len(targets), original_text)
 
     if config.DEBUG_MODE:
         print(f"\n{'='*60}\n[DEBUG] Job posting (id={message.id}, src={event.chat_id}):\n{original_text}\n{'='*60}\n")
         return
 
-    translated = await asyncio.get_event_loop().run_in_executor(
-        None, translate_uk_to_fa, original_text
-    )
+    # Translate + post once per configured language (Persian, Azerbaijani, …).
+    # Each language is independent: a failure on one must not stop the others.
+    for lang, dest in targets:
+        translated = await asyncio.get_event_loop().run_in_executor(
+            None, translate_uk, original_text, lang
+        )
 
-    sent = await asyncio.get_event_loop().run_in_executor(
-        None, post_to_channel, translated, dest
-    )
+        sent = await asyncio.get_event_loop().run_in_executor(
+            None, post_to_channel, translated, dest
+        )
 
-    if sent:
-        logger.info("Successfully forwarded post id=%s to %s", message.id, dest)
-    else:
-        logger.error("Post id=%s was NOT delivered to %s (see poster logs)", message.id, dest)
+        if sent:
+            logger.info("Successfully forwarded post id=%s (%s) to %s", message.id, lang, dest)
+        else:
+            logger.error("Post id=%s (%s) was NOT delivered to %s (see poster logs)", message.id, lang, dest)
 
-    # Debug feature: Send a copy to the admin, reflecting the real delivery status.
-    if config.ADMIN_ID and config.TELEGRAM_BOT_TOKEN:
-        status = "was forwarded ✅" if sent else "FAILED to send ❌"
-        try:
-            await bot_client.send_message(
-                int(config.ADMIN_ID),
-                f"🐛 DEBUG: Message passed filter and {status}\n\nOriginal:\n{original_text}\n\nTranslated:\n{translated}"
-            )
-        except Exception as e:
-            logger.error("Failed to forward debug message to admin: %s", e)
+        # Debug feature: Send a copy to the admin, reflecting the real delivery status.
+        if config.ADMIN_ID and config.TELEGRAM_BOT_TOKEN:
+            status = "was forwarded ✅" if sent else "FAILED to send ❌"
+            try:
+                await bot_client.send_message(
+                    int(config.ADMIN_ID),
+                    f"🐛 DEBUG [{lang}]: Message passed filter and {status}\n\nOriginal:\n{original_text}\n\nTranslated:\n{translated}"
+                )
+            except Exception as e:
+                logger.error("Failed to forward debug message to admin: %s", e)
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
@@ -168,9 +172,17 @@ async def main():
         try:
             entity = await client.get_entity(src)
             chat_id = utils.get_peer_id(entity)
-            ROUTE_BY_ID[chat_id] = config.ROUTES.get(src, config.DEFAULT_DEST)
+            # Build one (lang, dest) target per configured language for this source.
+            targets = [
+                (lang, routes[src])
+                for lang, routes in config.LANG_ROUTES.items()
+                if routes.get(src)
+            ]
+            if not targets and config.DEFAULT_DEST:
+                targets = [("fa", config.DEFAULT_DEST)]
+            ROUTE_BY_ID[chat_id] = targets
             logger.info("Resolved source %s -> %s (chat_id=%s, title=%s)",
-                        src, ROUTE_BY_ID[chat_id], chat_id, getattr(entity, "title", "?"))
+                        src, targets, chat_id, getattr(entity, "title", "?"))
             resolved += 1
         except Exception:
             logger.exception("Failed to resolve source channel '%s' — its updates may not arrive", src)
