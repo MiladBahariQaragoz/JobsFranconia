@@ -139,6 +139,15 @@ async def handle_new_post(event):
     # scheme-less auto-links that the visible text doesn't spell out.
     apply_url = _extract_apply_url(message)
 
+    # Every source post is expected to carry an apply link. If we couldn't find
+    # one, flag it to the admin (logger.error -> admin DM) with the post so it
+    # can be handled manually — the repost will otherwise go out without a link.
+    if apply_url is None:
+        logger.error(
+            "Could not find apply link in job post id=%s (src=%s):\n%s",
+            message.id, event.chat_id, original_text[:600],
+        )
+
     # Translate + post once per configured language (Persian, Azerbaijani, …).
     # Each language is independent: a failure on one must not stop the others.
     for lang, dest in targets:
@@ -150,21 +159,12 @@ async def handle_new_post(event):
             None, post_to_channel, translated, dest
         )
 
+        # Success is logged at INFO only (visible in Cloud Run logs, no admin DM).
+        # A failed delivery is an error -> admin_logger DMs the admin.
         if sent:
             logger.info("Successfully forwarded post id=%s (%s) to %s", message.id, lang, dest)
         else:
             logger.error("Post id=%s (%s) was NOT delivered to %s (see poster logs)", message.id, lang, dest)
-
-        # Debug feature: Send a copy to the admin, reflecting the real delivery status.
-        if config.ADMIN_ID and config.TELEGRAM_BOT_TOKEN:
-            status = "was forwarded ✅" if sent else "FAILED to send ❌"
-            try:
-                await bot_client.send_message(
-                    int(config.ADMIN_ID),
-                    f"🐛 DEBUG [{lang}]: Message passed filter and {status}\n\nOriginal:\n{original_text}\n\nTranslated:\n{translated}"
-                )
-            except Exception as e:
-                logger.error("Failed to forward debug message to admin: %s", e)
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
