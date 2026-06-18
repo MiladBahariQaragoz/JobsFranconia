@@ -59,28 +59,47 @@ async def handle_ping_cmd(event):
     await event.reply("Pong! 🏓")
 
 
-def _extract_apply_url(message) -> str | None:
-    """Return the application URL from the post, read from Telegram's message
-    entities rather than the visible text.
+_APPLY_MARKER = "👉"
 
-    The source channel often hides the apply link behind a clickable label
-    (MessageEntityTextUrl) or auto-links a scheme-less domain like
-    'www.joboo.de/x' (MessageEntityUrl) — in both cases the visible text has no
-    'https://...' to scrape. Entities are authoritative. We take the last URL,
-    which in these posts is the trailing 👉 apply link.
+
+def _extract_apply_url(message) -> str | None:
+    """Return ONLY the job-ad apply URL, read from Telegram's message entities.
+
+    Each source post carries two links: the apply link on the 👉 line, and a
+    separate "report a problem / contact admin" link. We want only the ad link,
+    so we don't just take the last URL — we take the first URL entity that falls
+    on/after the 👉 marker, which is the apply link. The report link (before 👉,
+    or a later admin/telegram link) is ignored.
+
+    Reading entities (not the visible text) is what lets this survive a clickable
+    label (MessageEntityTextUrl) or a scheme-less auto-linked domain like
+    'www.joboo.de/x' (MessageEntityUrl), neither of which spells out 'https://'.
+
+    Returns None when there is no 👉 line — better to drop the link than to risk
+    publishing the admin/report link in its place.
     """
+    raw = message.raw_text or ""
+    marker = raw.find(_APPLY_MARKER)
+    if marker < 0:
+        return None
+
+    # Telegram entity offsets are counted in UTF-16 code units, not Python chars.
+    marker_offset = len(raw[:marker].encode("utf-16-le")) // 2
+
     try:
-        pairs = message.get_entities_text()
+        pairs = message.get_entities_text()  # (entity, text), ordered by offset
     except Exception:
         return None
-    url = None
+
     for entity, entity_text in pairs:
+        if getattr(entity, "offset", -1) < marker_offset:
+            continue  # skip anything before the 👉 apply line (e.g. report link)
         explicit = getattr(entity, "url", None)  # MessageEntityTextUrl carries .url
         if explicit:
-            url = explicit
-        elif type(entity).__name__ == "MessageEntityUrl":  # bare/auto-linked URL
-            url = entity_text
-    return url
+            return explicit
+        if type(entity).__name__ == "MessageEntityUrl":  # bare/auto-linked URL
+            return entity_text
+    return None
 
 
 # Maps a resolved source chat id (Telethon marked peer id) -> list of
