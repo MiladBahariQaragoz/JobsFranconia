@@ -25,8 +25,9 @@ _TOP_LABELS = {
     "📂": "Kategorie",
 }
 
-# Order in which the top fields are emitted.
-_TOP_ORDER = ["🏢", "💶", "📍", "📂"]
+# Order in which the top fields are emitted. (📂 Kategorie is intentionally
+# dropped — see translate_uk_to_fa — because the source values are unreliable.)
+_TOP_ORDER = ["🏢", "💶", "📍"]
 
 RLM = chr(0x200F)  # U+200F RIGHT-TO-LEFT MARK — pins a line's base direction to RTL.
 
@@ -153,9 +154,10 @@ def translate_uk_to_fa(text: str) -> str:
             if top[marker] and _has_cyrillic(top[marker]):
                 de_targets[marker] = top[marker]
 
-        cat_word = category_raw.lstrip("#").strip() if category_raw else ""
-        if cat_word and _has_cyrillic(cat_word):
-            de_targets["__cat__"] = cat_word
+        # Category (📂) is intentionally dropped from the output — the source
+        # values are often inaccurate — so it is neither translated nor emitted.
+        # The 📂 line is still parsed above only so it can't leak into the
+        # description.
 
         if de_targets:
             keys = list(de_targets.keys())
@@ -166,14 +168,6 @@ def translate_uk_to_fa(text: str) -> str:
             for marker in ("🏢", "💶", "📍"):
                 if marker in de:
                     top[marker] = de[marker]
-            if "__cat__" in de:
-                cat_word = de["__cat__"]
-
-        category_tag = ""
-        if cat_word:
-            cat_clean = re.sub(r"\W+", "", cat_word)
-            if cat_clean:
-                category_tag = "#" + cat_clean
 
         # --- Description -> Persian ---
         desc_fa = ""
@@ -194,10 +188,7 @@ def translate_uk_to_fa(text: str) -> str:
             out.append("")
 
         for marker in _TOP_ORDER:
-            if marker == "📂":
-                if category_tag:
-                    out.append(f"📂 {_TOP_LABELS['📂']}: {esc(category_tag)}")
-            elif top.get(marker):
+            if top.get(marker):
                 out.append(f"{marker} {_TOP_LABELS[marker]}: {esc(top[marker])}")
 
         if desc_fa:
