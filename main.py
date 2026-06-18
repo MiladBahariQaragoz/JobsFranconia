@@ -59,6 +59,30 @@ async def handle_ping_cmd(event):
     await event.reply("Pong! 🏓")
 
 
+def _extract_apply_url(message) -> str | None:
+    """Return the application URL from the post, read from Telegram's message
+    entities rather than the visible text.
+
+    The source channel often hides the apply link behind a clickable label
+    (MessageEntityTextUrl) or auto-links a scheme-less domain like
+    'www.joboo.de/x' (MessageEntityUrl) — in both cases the visible text has no
+    'https://...' to scrape. Entities are authoritative. We take the last URL,
+    which in these posts is the trailing 👉 apply link.
+    """
+    try:
+        pairs = message.get_entities_text()
+    except Exception:
+        return None
+    url = None
+    for entity, entity_text in pairs:
+        explicit = getattr(entity, "url", None)  # MessageEntityTextUrl carries .url
+        if explicit:
+            url = explicit
+        elif type(entity).__name__ == "MessageEntityUrl":  # bare/auto-linked URL
+            url = entity_text
+    return url
+
+
 # Maps a resolved source chat id (Telethon marked peer id) -> list of
 # (lang, destination) targets. Populated at startup in main() from
 # config.LANG_ROUTES, so each source can fan out to one post per language.
@@ -92,11 +116,15 @@ async def handle_new_post(event):
         print(f"\n{'='*60}\n[DEBUG] Job posting (id={message.id}, src={event.chat_id}):\n{original_text}\n{'='*60}\n")
         return
 
+    # Authoritative apply URL from entities — survives clickable labels and
+    # scheme-less auto-links that the visible text doesn't spell out.
+    apply_url = _extract_apply_url(message)
+
     # Translate + post once per configured language (Persian, Azerbaijani, …).
     # Each language is independent: a failure on one must not stop the others.
     for lang, dest in targets:
         translated = await asyncio.get_event_loop().run_in_executor(
-            None, translate_uk, original_text, lang
+            None, translate_uk, original_text, lang, apply_url
         )
 
         sent = await asyncio.get_event_loop().run_in_executor(

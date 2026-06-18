@@ -92,13 +92,27 @@ def _value_after_colon(line: str) -> str:
     return parts[1].strip() if len(parts) == 2 else ""
 
 
-def translate_uk(text: str, lang: str = "fa") -> str:
+def _ensure_scheme(url: str) -> str:
+    """Prepend https:// to scheme-less links so Telegram renders a real <a>.
+    Auto-linked posts often carry a bare domain like 'www.joboo.de/x'."""
+    if url and not re.match(r"[a-z][a-z0-9+.\-]*://", url, re.I):
+        return "https://" + url
+    return url
+
+
+def translate_uk(text: str, lang: str = "fa", link_url: str | None = None) -> str:
     """Transform a Ukrainian/Russian job post into the channel format:
 
     German template + German values for the top (title, company, salary,
     location, category), `lang` for the job description, application link kept.
-    `lang` is one of `_LANGS` ("fa" Persian, "az" Azerbaijani). Returns the
-    original text on failure so the event loop never crashes.
+    `lang` is one of `_LANGS` ("fa" Persian, "az" Azerbaijani).
+
+    `link_url` is the authoritative application URL extracted from the message's
+    Telegram entities (see main.py). The source channel sometimes hides the link
+    behind a clickable label or auto-links a scheme-less domain, in which cases
+    the visible text carries no 'https://...' to scrape — `link_url` is then the
+    only way to recover it. Used as a fallback when the visible 👉 line has no
+    parseable URL. Returns the original text on failure so the loop never crashes.
     """
     cfg = _LANGS.get(lang, _LANGS["fa"])
     if not text or not text.strip():
@@ -161,6 +175,11 @@ def translate_uk(text: str, lang: str = "fa") -> str:
                 desc_lines.append(stripped)
             elif title is None:
                 title = stripped
+
+        # Fall back to the authoritative entity URL when the visible 👉 line had
+        # no scrapable 'https://...' (clickable label / scheme-less auto-link).
+        if not contact_url and link_url:
+            contact_url = link_url
 
         # --- Collect everything that needs German translation into one batch ---
         # Rule: translate to German only what still contains Cyrillic; Latin/German
@@ -228,7 +247,7 @@ def translate_uk(text: str, lang: str = "fa") -> str:
         if contact_url:
             out.append("")
             # Clickable localized label linking to the original application URL.
-            href = html.escape(contact_url, quote=True)
+            href = html.escape(_ensure_scheme(contact_url), quote=True)
             prefix = RLM if cfg["rtl"] else ""
             out.append(f'{prefix}👉 <a href="{href}">{esc(cfg["link_label"])}</a>')
 
