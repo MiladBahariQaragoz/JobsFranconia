@@ -1,0 +1,33 @@
+# Continuous deployment for the Jobs Franconia bot.
+#
+# A Cloud Build trigger (connected to the GitHub repo) runs this on every push to
+# master and redeploys the Cloud Run service `jobs-bot`.
+#
+# This intentionally mirrors the manual command in deploy.md, INCLUDING the flags
+# that keep a long-lived Telegram listener alive:
+#   --min-instances=1   keep one instance running 24/7 (no scale-to-zero)
+#   --max-instances=1   never run a second instance (would double-post)
+#   --no-cpu-throttling keep CPU on between requests
+# Dropping any of these makes the deploy "succeed" while the bot silently stops.
+#
+# Env vars / secrets are set on the service via the Cloud Run console and are
+# NOT cleared here, so they survive every redeploy.
+
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - jobs-bot
+      - --source=.
+      - --region=europe-west3
+      - --no-cpu-throttling
+      - --min-instances=1
+      - --max-instances=1
+      - --allow-unauthenticated
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s
