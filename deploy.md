@@ -13,9 +13,21 @@ This project is deployed on **Google Cloud Run**.
 If you edit the Python code (e.g., changing the filter logic in `filter.py` or modifying `main.py`) and want to push the updates to the live bot, run the following command in your terminal from the root folder of this project:
 
 ```bash
-gcloud run deploy jobs-bot --source . --region europe-west3 --no-cpu-throttling --allow-unauthenticated
+gcloud run deploy jobs-bot --source . --region europe-west3 --no-cpu-throttling --min-instances=1 --max-instances=1 --allow-unauthenticated
 ```
 *Note: This command will package the code, build a Docker container automatically via Cloud Build, and deploy it. It usually takes 2-3 minutes to complete.*
+
+> **Why `--min-instances=1` matters (the "deploys fine but stops working" bug):**
+> This bot is a long-lived *listener*, not a request/response web service. It opens
+> an outbound connection to Telegram and waits. Cloud Run, by default, scales an
+> instance to **zero** when no inbound HTTP requests arrive — which is always, here,
+> because nothing calls the service URL. When the instance is shut down the bot stops
+> receiving and forwarding posts, even though the deploy "succeeded". `--min-instances=1`
+> keeps exactly one instance alive 24/7; `--no-cpu-throttling` keeps its CPU running
+> between requests; `--max-instances=1` prevents a second instance (which would create
+> a duplicate Telegram listener and double-post). If you ever change env vars from the
+> Console instead of redeploying, re-check that **Minimum number of instances = 1** under
+> the revision's autoscaling settings.
 
 ## How to change Environment Variables (`.env` data)
 

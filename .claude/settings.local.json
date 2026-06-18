@@ -5,7 +5,10 @@
       "Bash(git remote *)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(gcloud --version)",
+      "Bash(gcloud config *)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }
