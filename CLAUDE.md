@@ -18,8 +18,10 @@ keeps only structured job postings, translates them Ukrainian → Persian (and,
 optionally, Ukrainian → Azerbaijani in parallel) via Google Cloud Translation, and
 reposts each language to its own destination channel. Runs 24/7 on Google Cloud Run.
 
-Live deployment: project `jobs-franconia-bot-01`, region `europe-west3`, service
-`jobs-bot`. See [deploy.md](deploy.md) for deploy/ops steps.
+Live deployment: project `jobs-franconia-bot-02`, region `europe-west3`, service
+`jobs-bot`. (Migrated 2026-06-19 from the now-broken `jobs-franconia-bot-01` — see
+deploy.md. Never run `gcloud projects delete` on the live project.) See
+[deploy.md](deploy.md) for deploy/ops steps.
 
 ## Pipeline (the one flow that matters)
 
@@ -57,6 +59,7 @@ Two Telethon clients run in one process:
 | [filter.py](filter.py) | `is_job_posting()` — emoji-marker heuristic | Pure function, no I/O. Easiest place to tune behavior |
 | [translator.py](translator.py) | `translate_uk(text, lang)` — Google Translate wrapper + pre/post-processing | Per-language settings in `_LANGS` (target code, labels, RTL). `translate_uk_to_fa` is a back-compat alias. Top fields always go to German; only the description + labels are language-specific |
 | [poster.py](poster.py) | `post_to_channel()` — sends HTML message via Bot API | Uses stdlib `urllib`, no extra deps |
+| [state.py](state.py) | Durable per-channel `last_seen` marker in GCS, for downtime catch-up | Fail-safe: storage errors are logged, never raised. Needs `STATE_BUCKET` |
 | [admin_logger.py](admin_logger.py) | Logging handler that DMs ERROR/CRITICAL logs to the admin | Attached at ERROR level in main.py |
 | [auth.py](auth.py) | One-time local generator for the Telethon session string | **Run locally only** — Telegram blocks cloud-IP logins |
 
@@ -79,6 +82,7 @@ Run env vars / Secret Manager. Never commit `.env` or session strings.
 | `DEST_CHANNELS` / `DEST_CHANNEL` | yes | Persian destinations (bot must be admin). Either one shared `DEST_CHANNEL` for all sources, or `DEST_CHANNELS` paired 1:1 by position with `SOURCE_CHANNELS` |
 | `DEST_CHANNELS_AZ` / `DEST_CHANNEL_AZ` | no | Azerbaijani destinations, same pairing rules as the Persian ones. Unset → Persian-only |
 | `GOOGLE_CLOUD_PROJECT` | yes | GCP project for Translation API |
+| `STATE_BUCKET` | recommended | GCS bucket holding `last_seen.json` for missed-message catch-up. Runtime SA needs `roles/storage.objectAdmin`. Unset → no cross-restart catch-up (still runs) |
 | `ADMIN_ID` | optional | Telegram user id for admin commands + error DMs |
 | `DEBUG_MODE` | optional | `true` → read+filter+print only; no translate/post. Relaxes required vars |
 | `PORT` | set by Cloud Run | Triggers the dummy HTTP health server |

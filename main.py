@@ -10,6 +10,7 @@ from telethon import TelegramClient, events, utils
 from telethon.sessions import StringSession
 
 import config
+import state
 from filter import is_job_posting
 
 if not config.DEBUG_MODE:
@@ -107,64 +108,139 @@ def _extract_apply_url(message) -> str | None:
 # config.LANG_ROUTES, so each source can fan out to one post per language.
 ROUTE_BY_ID: dict[int, list[tuple[str, object]]] = {}
 
+# Resolved entity per source chat id, cached at startup so catch_up() can read
+# message history reliably (by entity rather than a possibly-uncached id).
+ENTITY_BY_ID: dict[int, object] = {}
+
+# Message ids already handled in THIS process, per chat. Guards against the
+# live handler and the startup catch_up() both processing the same message in
+# their brief overlap window. Bounded to keep memory flat on a long-lived run.
+_processed: dict[int, set] = {}
+
+
+def _mark_processed(chat_id, message_id) -> bool:
+    """Record a message id as handled. Return False if it was already handled."""
+    seen = _processed.setdefault(chat_id, set())
+    if message_id in seen:
+        return False
+    seen.add(message_id)
+    if len(seen) > 2000:  # drop the oldest half to bound memory
+        for old in sorted(seen)[:1000]:
+            seen.discard(old)
+    return True
+
+
+async def process_message(message, chat_id):
+    """Filter, translate and repost a single source message.
+
+    Shared by the live handler and the startup catch-up so missed posts are
+    handled identically. Idempotent within a process via ``_mark_processed``;
+    advances the persisted per-chat marker (``state``) so a future restart
+    resumes after this message instead of replaying or dropping it.
+    """
+    targets = ROUTE_BY_ID.get(chat_id)
+    if targets is None:
+        logger.debug("Ignoring message from non-source chat_id=%s", chat_id)
+        return
+    if not _mark_processed(chat_id, message.id):
+        logger.debug("Skipping already-handled message id=%s (chat_id=%s)", message.id, chat_id)
+        return
+
+    loop = asyncio.get_event_loop()
+    try:
+        original_text = message.text or message.message
+        if not original_text:
+            logger.info("Skipping non-text message (id=%s)", message.id)
+            return
+
+        if not is_job_posting(original_text):
+            logger.info("Filtered out non-job-posting message (id=%s, src=%s)", message.id, chat_id)
+            return
+
+        logger.info("Job posting received (id=%s, src=%s -> %d target(s)): %.80s…",
+                    message.id, chat_id, len(targets), original_text)
+
+        if config.DEBUG_MODE:
+            print(f"\n{'='*60}\n[DEBUG] Job posting (id={message.id}, src={chat_id}):\n{original_text}\n{'='*60}\n")
+            return
+
+        # Authoritative apply URL from entities — survives clickable labels and
+        # scheme-less auto-links that the visible text doesn't spell out.
+        apply_url = _extract_apply_url(message)
+
+        # Every source post is expected to carry an apply link. If we couldn't find
+        # one, flag it to the admin (logger.error -> admin DM) with the post so it
+        # can be handled manually — the repost will otherwise go out without a link.
+        if apply_url is None:
+            logger.error(
+                "Could not find apply link in job post id=%s (src=%s):\n%s",
+                message.id, chat_id, original_text[:600],
+            )
+
+        # Translate + post once per configured language (Persian, Azerbaijani, …).
+        # Each language is independent: a failure on one must not stop the others.
+        for lang, dest in targets:
+            translated = await loop.run_in_executor(
+                None, translate_uk, original_text, lang, apply_url
+            )
+
+            sent = await loop.run_in_executor(
+                None, post_to_channel, translated, dest
+            )
+
+            # Success is logged at INFO only (visible in Cloud Run logs, no admin DM).
+            # A failed delivery is an error -> admin_logger DMs the admin.
+            if sent:
+                logger.info("Successfully forwarded post id=%s (%s) to %s", message.id, lang, dest)
+            else:
+                logger.error("Post id=%s (%s) was NOT delivered to %s (see poster logs)", message.id, lang, dest)
+    finally:
+        # Advance the durable marker even for filtered/failed messages so a
+        # restart doesn't re-examine (or re-post) them. set_last_seen only ever
+        # moves forward, so live/backfill ordering can't rewind it.
+        await loop.run_in_executor(None, state.set_last_seen, chat_id, message.id)
+
 
 @client.on(events.NewMessage())
 async def handle_new_post(event):
     # Listen to every chat the user account sees and match by the resolved chat
     # id (cached at startup). This is more robust than Telethon's username-based
     # chats= filter, which can fail to match channel updates.
-    if event.chat_id not in ROUTE_BY_ID:
-        logger.debug("Ignoring message from non-source chat_id=%s", event.chat_id)
-        return
+    await process_message(event.message, event.chat_id)
 
-    targets = ROUTE_BY_ID[event.chat_id]
-    message = event.message
-    original_text = message.text or message.message
-    if not original_text:
-        logger.info("Skipping non-text message (id=%s)", message.id)
-        return
 
-    if not is_job_posting(original_text):
-        logger.info("Filtered out non-job-posting message (id=%s, src=%s)", message.id, event.chat_id)
-        return
+async def catch_up():
+    """Replay messages posted to each source while the bot was down.
 
-    logger.info("Job posting received (id=%s, src=%s -> %d target(s)): %.80s…",
-                message.id, event.chat_id, len(targets), original_text)
+    Uses the durable per-chat marker from ``state``: on a normal restart we fetch
+    everything newer than the marker and run it through the same pipeline. On the
+    very first run (no marker yet) we DON'T replay history — we just record the
+    current latest id as a baseline, so only genuine future downtime is caught up.
+    """
+    loop = asyncio.get_event_loop()
+    for chat_id in list(ROUTE_BY_ID):
+        entity = ENTITY_BY_ID.get(chat_id, chat_id)
+        try:
+            last = await loop.run_in_executor(None, state.get_last_seen, chat_id)
+            if not last:
+                latest = await client.get_messages(entity, limit=1)
+                if latest:
+                    await loop.run_in_executor(None, state.set_last_seen, chat_id, latest[0].id)
+                    logger.info("Catch-up: baseline set for chat_id=%s at id=%s (no history replay on first run)",
+                                chat_id, latest[0].id)
+                continue
 
-    if config.DEBUG_MODE:
-        print(f"\n{'='*60}\n[DEBUG] Job posting (id={message.id}, src={event.chat_id}):\n{original_text}\n{'='*60}\n")
-        return
-
-    # Authoritative apply URL from entities — survives clickable labels and
-    # scheme-less auto-links that the visible text doesn't spell out.
-    apply_url = _extract_apply_url(message)
-
-    # Every source post is expected to carry an apply link. If we couldn't find
-    # one, flag it to the admin (logger.error -> admin DM) with the post so it
-    # can be handled manually — the repost will otherwise go out without a link.
-    if apply_url is None:
-        logger.error(
-            "Could not find apply link in job post id=%s (src=%s):\n%s",
-            message.id, event.chat_id, original_text[:600],
-        )
-
-    # Translate + post once per configured language (Persian, Azerbaijani, …).
-    # Each language is independent: a failure on one must not stop the others.
-    for lang, dest in targets:
-        translated = await asyncio.get_event_loop().run_in_executor(
-            None, translate_uk, original_text, lang, apply_url
-        )
-
-        sent = await asyncio.get_event_loop().run_in_executor(
-            None, post_to_channel, translated, dest
-        )
-
-        # Success is logged at INFO only (visible in Cloud Run logs, no admin DM).
-        # A failed delivery is an error -> admin_logger DMs the admin.
-        if sent:
-            logger.info("Successfully forwarded post id=%s (%s) to %s", message.id, lang, dest)
-        else:
-            logger.error("Post id=%s (%s) was NOT delivered to %s (see poster logs)", message.id, lang, dest)
+            # Materialise the missed ids up front (oldest→newest) so the marker
+            # advancing as we process can't shorten the list mid-iteration.
+            missed = [m async for m in client.iter_messages(entity, min_id=last, reverse=True)]
+            if not missed:
+                continue
+            logger.info("Catch-up: replaying %d missed message(s) for chat_id=%s (since id=%s)",
+                        len(missed), chat_id, last)
+            for msg in missed:
+                await process_message(msg, chat_id)
+        except Exception:
+            logger.exception("Catch-up failed for chat_id=%s", chat_id)
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
@@ -228,6 +304,7 @@ async def main():
             if not targets and config.DEFAULT_DEST:
                 targets = [("fa", config.DEFAULT_DEST)]
             ROUTE_BY_ID[chat_id] = targets
+            ENTITY_BY_ID[chat_id] = entity
             logger.info("Resolved source %s -> %s (chat_id=%s, title=%s)",
                         src, targets, chat_id, getattr(entity, "title", "?"))
             resolved += 1
@@ -238,6 +315,14 @@ async def main():
         logger.error("No source channels could be resolved — the bot will not forward anything")
 
     logger.info("Listening on %d/%d source channel(s)", resolved, len(config.SOURCE_CHANNELS))
+
+    # Replay anything posted while the bot was down, then keep listening live.
+    # Runs after the live handler is already attached, so the in-process dedup in
+    # process_message covers the overlap. Never let a catch-up error stop startup.
+    try:
+        await catch_up()
+    except Exception:
+        logger.exception("Catch-up pass failed; continuing with live listening")
 
     # add_signal_handler is Unix-only; on Windows fall back to KeyboardInterrupt
     if sys.platform != "win32":
