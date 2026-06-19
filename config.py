@@ -107,6 +107,9 @@ ADMIN_ID             = _optional("ADMIN_ID") # Telegram User ID for admin dashbo
 
 # Source posts are frequently published as a skeleton and then EDITED moments
 # later to append the verified 👉 apply line — an edit the live listener never
-# sees. When a fresh post arrives with no apply link, wait this many seconds and
-# re-fetch the message once before posting, to pick up that edit. 0 disables it.
-LINK_REFETCH_DELAY = int(_optional("LINK_REFETCH_DELAY_SECONDS", "45") or "45")
+# sees. When a fresh post arrives with no apply link, re-fetch the message every
+# LINK_REFETCH_DELAY seconds (poll interval) until the edit lands, giving up
+# after LINK_REFETCH_MAX_WAIT seconds total. On give-up the post is skipped and
+# the admin gets a single alert. Set LINK_REFETCH_DELAY=0 to disable the wait.
+LINK_REFETCH_DELAY    = int(_optional("LINK_REFETCH_DELAY_SECONDS", "45") or "45")
+LINK_REFETCH_MAX_WAIT = int(_optional("LINK_REFETCH_MAX_WAIT_SECONDS", "300") or "300")

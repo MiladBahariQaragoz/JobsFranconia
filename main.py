@@ -174,36 +174,49 @@ async def process_message(message, chat_id, live: bool = False):
         apply_url = _extract_apply_url(message)
 
         # The source often posts a skeleton first, then EDITS in the 👉 apply line
-        # seconds later (consistent with the 🛡 "fully checked" status being
+        # within a few minutes (consistent with the 🛡 "fully checked" status being
         # finalised on edit). The live listener only sees the original, link-less
-        # version. So for a fresh post with no link, wait briefly and re-fetch the
-        # message once to pick up that edit before committing to a link-less post.
+        # version. So for a fresh post with no link, poll the message — re-fetching
+        # every LINK_REFETCH_DELAY seconds up to LINK_REFETCH_MAX_WAIT total —
+        # until the edit lands. Retries are logged at INFO/WARNING only (below the
+        # admin-DM threshold) so waiting never spams the admin; the single alert is
+        # sent only if the link never appears.
         if apply_url is None and live and config.LINK_REFETCH_DELAY > 0:
-            logger.info("No apply link yet for id=%s; waiting %ds for a source edit before posting",
-                        message.id, config.LINK_REFETCH_DELAY)
-            await asyncio.sleep(config.LINK_REFETCH_DELAY)
-            try:
-                entity = ENTITY_BY_ID.get(chat_id, chat_id)
-                refetched = await client.get_messages(entity, ids=message.id)
-            except Exception:
-                logger.exception("Re-fetch failed for id=%s; proceeding with original", message.id)
-                refetched = None
-            if refetched is not None:
+            entity = ENTITY_BY_ID.get(chat_id, chat_id)
+            waited = 0
+            while apply_url is None and waited < config.LINK_REFETCH_MAX_WAIT:
+                delay = min(config.LINK_REFETCH_DELAY, config.LINK_REFETCH_MAX_WAIT - waited)
+                logger.info("No apply link yet for id=%s; waiting %ds (%ds/%ds) for a source edit",
+                            message.id, delay, waited, config.LINK_REFETCH_MAX_WAIT)
+                await asyncio.sleep(delay)
+                waited += delay
+                try:
+                    refetched = await client.get_messages(entity, ids=message.id)
+                except Exception:
+                    logger.warning("Re-fetch failed for id=%s (%ds elapsed); will retry", message.id, waited)
+                    continue
+                if refetched is None:
+                    continue
                 new_url = _extract_apply_url(refetched)
                 if new_url is not None:
-                    logger.info("Recovered apply link for id=%s from a later source edit", message.id)
+                    logger.info("Recovered apply link for id=%s after %ds from a later source edit",
+                                message.id, waited)
                     message = refetched
                     original_text = refetched.text or refetched.message
                     apply_url = new_url
 
-        # Every source post is expected to carry an apply link. If we couldn't find
-        # one, flag it to the admin (logger.error -> admin DM) with the post so it
-        # can be handled manually — the repost will otherwise go out without a link.
+        # Still no apply link — after waiting for an edit (live) or outright
+        # (catch-up). A job post without an apply link isn't useful, so skip it
+        # entirely and send ONE alert to the admin to handle manually. This is the
+        # only admin message on this path; the retries above stay silent.
         if apply_url is None:
             logger.error(
-                "Could not find apply link in job post id=%s (src=%s):\n%s",
-                message.id, chat_id, original_text[:600],
+                "Skipping job post id=%s (src=%s): no apply link found%s:\n%s",
+                message.id, chat_id,
+                f" after waiting {config.LINK_REFETCH_MAX_WAIT}s" if live else "",
+                original_text[:600],
             )
+            return
 
         # Translate + post once per configured language (Persian, Azerbaijani, …).
         # Each language is independent: a failure on one must not stop the others.
