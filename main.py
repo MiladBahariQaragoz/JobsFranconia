@@ -130,13 +130,18 @@ def _mark_processed(chat_id, message_id) -> bool:
     return True
 
 
-async def process_message(message, chat_id):
+async def process_message(message, chat_id, live: bool = False):
     """Filter, translate and repost a single source message.
 
     Shared by the live handler and the startup catch-up so missed posts are
     handled identically. Idempotent within a process via ``_mark_processed``;
     advances the persisted per-chat marker (``state``) so a future restart
     resumes after this message instead of replaying or dropping it.
+
+    ``live=True`` marks a message arriving from the live listener (vs. a
+    historical catch-up replay). Only live posts are eligible for the
+    apply-link re-fetch wait below — a catch-up message is already fetched in
+    its final, edited form, so waiting would gain nothing.
     """
     targets = ROUTE_BY_ID.get(chat_id)
     if targets is None:
@@ -167,6 +172,29 @@ async def process_message(message, chat_id):
         # Authoritative apply URL from entities — survives clickable labels and
         # scheme-less auto-links that the visible text doesn't spell out.
         apply_url = _extract_apply_url(message)
+
+        # The source often posts a skeleton first, then EDITS in the 👉 apply line
+        # seconds later (consistent with the 🛡 "fully checked" status being
+        # finalised on edit). The live listener only sees the original, link-less
+        # version. So for a fresh post with no link, wait briefly and re-fetch the
+        # message once to pick up that edit before committing to a link-less post.
+        if apply_url is None and live and config.LINK_REFETCH_DELAY > 0:
+            logger.info("No apply link yet for id=%s; waiting %ds for a source edit before posting",
+                        message.id, config.LINK_REFETCH_DELAY)
+            await asyncio.sleep(config.LINK_REFETCH_DELAY)
+            try:
+                entity = ENTITY_BY_ID.get(chat_id, chat_id)
+                refetched = await client.get_messages(entity, ids=message.id)
+            except Exception:
+                logger.exception("Re-fetch failed for id=%s; proceeding with original", message.id)
+                refetched = None
+            if refetched is not None:
+                new_url = _extract_apply_url(refetched)
+                if new_url is not None:
+                    logger.info("Recovered apply link for id=%s from a later source edit", message.id)
+                    message = refetched
+                    original_text = refetched.text or refetched.message
+                    apply_url = new_url
 
         # Every source post is expected to carry an apply link. If we couldn't find
         # one, flag it to the admin (logger.error -> admin DM) with the post so it
@@ -206,7 +234,7 @@ async def handle_new_post(event):
     # Listen to every chat the user account sees and match by the resolved chat
     # id (cached at startup). This is more robust than Telethon's username-based
     # chats= filter, which can fail to match channel updates.
-    await process_message(event.message, event.chat_id)
+    await process_message(event.message, event.chat_id, live=True)
 
 
 async def catch_up():

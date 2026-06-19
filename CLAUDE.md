@@ -83,6 +83,7 @@ Run env vars / Secret Manager. Never commit `.env` or session strings.
 | `DEST_CHANNELS_AZ` / `DEST_CHANNEL_AZ` | no | Azerbaijani destinations, same pairing rules as the Persian ones. Unset → Persian-only |
 | `GOOGLE_CLOUD_PROJECT` | yes | GCP project for Translation API |
 | `STATE_BUCKET` | recommended | GCS bucket holding `last_seen.json` for missed-message catch-up. Runtime SA needs `roles/storage.objectAdmin`. Unset → no cross-restart catch-up (still runs) |
+| `LINK_REFETCH_DELAY_SECONDS` | optional | Seconds to wait + re-fetch a fresh, link-less post to recover a 👉 apply link the source adds via a later edit (default `45`; `0` disables) |
 | `ADMIN_ID` | optional | Telegram user id for admin commands + error DMs |
 | `DEBUG_MODE` | optional | `true` → read+filter+print only; no translate/post. Relaxes required vars |
 | `PORT` | set by Cloud Run | Triggers the dummy HTTP health server |

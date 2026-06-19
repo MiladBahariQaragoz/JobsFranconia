@@ -104,3 +104,9 @@ DEST_CHANNEL   = DEST_CHANNELS[0] if DEST_CHANNELS else None
 TELEGRAM_BOT_TOKEN   = _optional("TELEGRAM_BOT_TOKEN")   if DEBUG_MODE else _require("TELEGRAM_BOT_TOKEN")
 GOOGLE_CLOUD_PROJECT = _optional("GOOGLE_CLOUD_PROJECT")  if DEBUG_MODE else _require("GOOGLE_CLOUD_PROJECT")
 ADMIN_ID             = _optional("ADMIN_ID") # Telegram User ID for admin dashboard and error logs
+
+# Source posts are frequently published as a skeleton and then EDITED moments
+# later to append the verified 👉 apply line — an edit the live listener never
+# sees. When a fresh post arrives with no apply link, wait this many seconds and
+# re-fetch the message once before posting, to pick up that edit. 0 disables it.
+LINK_REFETCH_DELAY = int(_optional("LINK_REFETCH_DELAY_SECONDS", "45") or "45")
