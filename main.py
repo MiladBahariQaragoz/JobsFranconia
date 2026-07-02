@@ -11,7 +11,7 @@ from telethon.sessions import StringSession
 
 import config
 import state
-from filter import is_job_posting
+from filter import is_job_posting, blocked_reason
 
 if not config.DEBUG_MODE:
     from translator import translate_uk
@@ -162,6 +162,16 @@ async def process_message(message, chat_id, live: bool = False):
             logger.info("Filtered out non-job-posting message (id=%s, src=%s)", message.id, chat_id)
             return
 
+        # Drop posts that route applicants off-channel. Scan the plain visible text
+        # (message.raw_text) so a link hidden behind a clickable label — notably the
+        # source channel's boilerplate "report a problem" link — can't match here;
+        # the apply link is checked separately below once resolved.
+        reason = blocked_reason(message.raw_text or "")
+        if reason:
+            logger.info("Dropping post id=%s (src=%s): text contains a blocked %s contact",
+                        message.id, chat_id, reason)
+            return
+
         logger.info("Job posting received (id=%s, src=%s -> %d target(s)): %.80s…",
                     message.id, chat_id, len(targets), original_text)
 
@@ -216,6 +226,16 @@ async def process_message(message, chat_id, live: bool = False):
                 f" after waiting {config.LINK_REFETCH_MAX_WAIT}s" if live else "",
                 original_text[:600],
             )
+            return
+
+        # Per policy the apply link is checked too — including a Telegram/Facebook
+        # link hidden behind a clickable label or one the source only adds via a
+        # later edit (recovered by the re-fetch above). _extract_apply_url has
+        # already unpacked it from the message entities.
+        reason = blocked_reason(apply_url)
+        if reason:
+            logger.info("Dropping post id=%s (src=%s): apply link is a blocked %s contact",
+                        message.id, chat_id, reason)
             return
 
         # Translate + post once per configured language (Persian, Azerbaijani, …).
