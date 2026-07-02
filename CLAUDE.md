@@ -30,6 +30,8 @@ A single event handler in [main.py](main.py) drives everything:
 ```
 new message in any SOURCE_CHANNELS
   → filter.is_job_posting()      # keep only structured job posts
+  → filter.blocked_reason()      # drop posts with a Telegram/Facebook link or phone
+                                 #   number in the poster's text or the apply link
   → translator.translate_uk(text, "fa")   # Google Translate (uk→fa), MyMemory fallback
   → poster.post_to_channel(text, dest)    # Telegram Bot API → routed DEST
 ```
@@ -55,7 +57,7 @@ Two Telethon clients run in one process:
 |------|----------------|-------|
 | [main.py](main.py) | Entry point, event loop, both Telethon clients, admin commands, Cloud Run health server | The only place that wires modules together |
 | [config.py](config.py) | Loads + validates env vars | `_require` fails fast in prod; `_optional` relaxes in `DEBUG_MODE` |
-| [filter.py](filter.py) | `is_job_posting()` — emoji-marker heuristic | Pure function, no I/O. Easiest place to tune behavior |
+| [filter.py](filter.py) | `is_job_posting()` — emoji-marker heuristic; `blocked_reason()` / `has_blocked_content()` — off-channel-contact drop rule (Telegram/Facebook links, phone numbers) | Pure functions, no I/O. Easiest place to tune behavior. `blocked_reason` is deliberately broad (matches bare words `telegram`/`facebook` too) |
 | [translator.py](translator.py) | `translate_uk(text, lang)` — Google Translate wrapper + pre/post-processing, with a **MyMemory backup** (`_mymemory_translate`) used only when Google fails | Per-language settings in `_LANGS` (only `fa`). `translate_uk_to_fa` is a back-compat alias. Top fields always go to German; the description + labels are language-specific. MyMemory reads `MYMEMORY_EMAIL` from the env and chunks text under its ~500-char/request cap |
 | [poster.py](poster.py) | `post_to_channel()` — sends HTML message via Bot API | Uses stdlib `urllib`, no extra deps |
 | [state.py](state.py) | Durable per-channel `last_seen` marker in GCS, for downtime catch-up | Fail-safe: storage errors are logged, never raised. Needs `STATE_BUCKET` |
