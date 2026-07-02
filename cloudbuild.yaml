@@ -1,33 +1,52 @@
 # Continuous deployment for the Jobs Franconia bot.
 #
-# A Cloud Build trigger (connected to the GitHub repo) runs this on every push to
-# master and redeploys the Cloud Run service `jobs-bot`.
+# The bot runs as a Docker container ("jobs-bot") on the shared VM "german-bot"
+# (project learn-german-bot, us-central1-a) — NOT on Cloud Run. On every push to
+# master, the Cloud Build trigger runs this file and:
+#   1. builds the image and pushes it to Artifact Registry (tagged with the commit)
+#   2. SSHes into the VM and runs /opt/jobs-bot-deploy.sh to pull + restart it
 #
-# This intentionally mirrors the manual command in deploy.md, INCLUDING the flags
-# that keep a long-lived Telegram listener alive:
-#   --min-instances=1   keep one instance running 24/7 (no scale-to-zero)
-#   --max-instances=1   never run a second instance (would double-post)
-#   --no-cpu-throttling keep CPU on between requests
-# Dropping any of these makes the deploy "succeed" while the bot silently stops.
+# SSH uses a dedicated key: the public half is in the VM's authorized_keys, the
+# private half is in Secret Manager (secret: jobs-bot-deploy-ssh-key; the build
+# service account has roles/secretmanager.secretAccessor). The bot's real config
+# and secrets live in /etc/jobs-bot.env ON THE VM and are never touched here.
 #
-# Env vars / secrets are set on the service via the Cloud Run console and are
-# NOT cleared here, so they survive every redeploy.
+# The VM's external IP is a reserved static address (german-bot-ip), so it is safe
+# to hard-code below. If the VM is ever recreated, update _VM_SSH.
+
+substitutions:
+  _IMAGE: europe-west3-docker.pkg.dev/jobs-franconia-bot-02/cloud-run-source-deploy/jobs-bot
+  _VM_SSH: botadmin@136.111.141.109
 
 steps:
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
+  # 1. Build the image, tagged with the commit SHA and latest.
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${_IMAGE}:${SHORT_SHA}', '-t', '${_IMAGE}:latest', '.']
+
+  # 2. Push both tags to Artifact Registry.
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', '--all-tags', '${_IMAGE}']
+
+  # 3. SSH into the VM and redeploy the container onto the new image.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    secretEnv: ['DEPLOY_KEY']
     args:
-      - run
-      - deploy
-      - jobs-bot
-      - --source=.
-      - --region=europe-west3
-      - --no-cpu-throttling
-      - --min-instances=1
-      - --max-instances=1
-      - --allow-unauthenticated
+      - -c
+      - |
+        set -e
+        install -m 700 -d /root/.ssh
+        printf '%s' "$$DEPLOY_KEY" > /root/.ssh/id_deploy
+        chmod 600 /root/.ssh/id_deploy
+        ssh -i /root/.ssh/id_deploy \
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          ${_VM_SSH} "sudo /opt/jobs-bot-deploy.sh ${_IMAGE}:${SHORT_SHA}"
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/jobs-franconia-bot-02/secrets/jobs-bot-deploy-ssh-key/versions/latest
+      env: DEPLOY_KEY
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
 timeout: 1200s
