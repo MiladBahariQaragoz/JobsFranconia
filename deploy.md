@@ -1,28 +1,46 @@
 # Deployment Guide
 
-This project is deployed on **Google Cloud Run**. 
+The bot runs as a **Docker container (`jobs-bot`) on the `german-bot` VM**, not on
+Cloud Run. It was moved off Cloud Run on 2026-07-02 because a long-lived listener
+there needs an always-on instance (min-instances=1, no CPU throttling), which cost
+~€35/month; the VM already runs 24/7 for another bot, so co-hosting is ~free.
 
 ## Deployment Details
-- **Platform:** Google Cloud Run
-- **Project ID:** `jobs-franconia-bot-02`
-- **Region:** `europe-west3` (Frankfurt)
-- **Service Name:** `jobs-bot`
+- **Host VM:** `german-bot` (project `learn-german-bot`, zone `us-central1-a`),
+  reserved static IP `german-bot-ip`. The container runs `--restart=always`.
+- **Container config:** env/secrets in `/etc/jobs-bot.env` on the VM (root, 600).
+  Deploy helper: `/opt/jobs-bot-deploy.sh <image>` (pull + restart).
+- **Image registry:** `europe-west3-docker.pkg.dev/jobs-franconia-bot-02/cloud-run-source-deploy/jobs-bot`
 - **State bucket:** `gs://jobs-franconia-bot-02-state` (holds `last_seen.json` for catch-up)
+- **CI/CD:** Cloud Build trigger on push to `master` runs [cloudbuild.yaml](cloudbuild.yaml).
 
 > **History:** the original project `jobs-franconia-bot-01` was deleted (manually,
 > via `gcloud projects delete`, 2026-06-17) and an undelete left its Cloud Run data
-> plane permanently broken — all writes failed `"Project has been deleted"` even though
-> the control plane reported ACTIVE. The bot was migrated to `jobs-franconia-bot-02` on
-> 2026-06-19. **Never run `gcloud projects delete` on the live project.**
+> plane permanently broken. The bot was migrated to `jobs-franconia-bot-02` on
+> 2026-06-19, then moved from Cloud Run to the `german-bot` VM on 2026-07-02.
+> **Never run `gcloud projects delete` on the live project.**
 
 ## How to make changes to the code
 
-If you edit the Python code (e.g., changing the filter logic in `filter.py` or modifying `main.py`) and want to push the updates to the live bot, run the following command in your terminal from the root folder of this project:
+**Automatic (preferred):** push to `master`. The Cloud Build trigger runs
+[cloudbuild.yaml](cloudbuild.yaml), which builds the image, pushes it to Artifact
+Registry (tagged with the commit), then SSHes into the VM and pulls + restarts the
+container. SSH uses a dedicated key whose private half is in Secret Manager
+(`jobs-bot-deploy-ssh-key`; the build service account has `secretAccessor`) and
+whose public half is in the VM's `authorized_keys`.
+
+**Manual (fallback), from a machine with SSH access to the VM:**
 
 ```bash
-gcloud run deploy jobs-bot --source . --region europe-west3 --no-cpu-throttling --min-instances=1 --max-instances=1 --allow-unauthenticated
+# build + push an image, then deploy it on the VM
+gcloud builds submit . --project jobs-franconia-bot-02 --region europe-west3 \
+  --tag europe-west3-docker.pkg.dev/jobs-franconia-bot-02/cloud-run-source-deploy/jobs-bot:manual
+gcloud compute ssh botadmin@german-bot --project learn-german-bot --zone us-central1-a \
+  --command "sudo /opt/jobs-bot-deploy.sh europe-west3-docker.pkg.dev/jobs-franconia-bot-02/cloud-run-source-deploy/jobs-bot:manual"
 ```
-*Note: This command will package the code, build a Docker container automatically via Cloud Build, and deploy it. It usually takes 2-3 minutes to complete.*
+
+*The sections below describe the previous Cloud Run setup and are kept for
+historical context only — they no longer reflect how the bot is deployed.*
 
 > **Why `--min-instances=1` matters (the "deploys fine but stops working" bug):**
 > This bot is a long-lived *listener*, not a request/response web service. It opens

@@ -16,12 +16,17 @@ strings or tokens) — those are covered by `.gitignore`.
 A **Telegram channel translator bot**. It listens to a Ukrainian source channel,
 keeps only structured job postings, translates them Ukrainian → Persian via Google
 Cloud Translation (with a free MyMemory fallback when Google fails), and reposts
-them to the destination channel. Runs 24/7 on Google Cloud Run.
+them to the destination channel. Runs 24/7 as a Docker container on a small
+always-on VM.
 
-Live deployment: project `jobs-franconia-bot-02`, region `europe-west3`, service
-`jobs-bot`. (Migrated 2026-06-19 from the now-broken `jobs-franconia-bot-01` — see
-deploy.md. Never run `gcloud projects delete` on the live project.) See
-[deploy.md](deploy.md) for deploy/ops steps.
+Live deployment: the `jobs-bot` Docker container on the **`german-bot` VM**
+(project `learn-german-bot`, zone `us-central1-a`), which it shares with an
+unrelated bot. The image lives in Artifact Registry under project
+`jobs-franconia-bot-02`, and the state bucket is `gs://jobs-franconia-bot-02-state`.
+Pushing to `master` auto-deploys via Cloud Build (build image → SSH the VM →
+pull + restart); see [deploy.md](deploy.md). Moved off Cloud Run on 2026-07-02 to
+cut cost; earlier migrated 2026-06-19 from the broken `jobs-franconia-bot-01`.
+**Never run `gcloud projects delete` on the live project.**
 
 ## Pipeline (the one flow that matters)
 
