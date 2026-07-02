@@ -1,6 +1,10 @@
 import html
+import json
 import logging
+import os
 import re
+import urllib.parse
+import urllib.request
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +48,6 @@ _LANGS = {
         "link_label": "لینک آگهی",
         "rtl": True,
     },
-    "az": {  # Azerbaijani (Latin script, left-to-right)
-        "code": "az",
-        "desc_label": "Təsvir",
-        "link_label": "Elan linki",
-        "rtl": False,
-    },
 }
 
 # Cyrillic block — used to decide whether a value still needs translating.
@@ -66,24 +64,91 @@ def _has_cyrillic(s: str) -> bool:
     return bool(_CYRILLIC.search(s))
 
 
+# --- MyMemory backup translator -------------------------------------------
+# Free fallback used only when Google Translate raises (quota, 403, outage). Uses
+# stdlib HTTP (urllib), matching the repo convention. MyMemory caps each request
+# near 500 characters, so multi-line text is translated line by line and any long
+# line is split on spaces. Set MYMEMORY_EMAIL to lift the free daily quota
+# (~50k vs ~5k characters/day); it is read straight from the environment.
+_MYMEMORY_URL = "https://api.mymemory.translated.net/get"
+_MYMEMORY_LIMIT = 480  # per-request character budget (below MyMemory's ~500 cap)
+
+
+def _mymemory_get(text: str, source: str, target: str) -> str:
+    """Translate one <=_MYMEMORY_LIMIT-char chunk via MyMemory. Raises on error."""
+    params = {"q": text, "langpair": f"{source}|{target}"}
+    email = os.environ.get("MYMEMORY_EMAIL", "").strip()
+    if email:
+        params["de"] = email
+    url = f"{_MYMEMORY_URL}?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    translated = (data.get("responseData") or {}).get("translatedText")
+    if not translated or str(data.get("responseStatus")) != "200":
+        raise RuntimeError(f"MyMemory error (status={data.get('responseStatus')}): {str(data)[:200]}")
+    return html.unescape(translated)
+
+
+def _mymemory_translate(text: str, source: str, target: str) -> str:
+    """Translate multi-line text via MyMemory, preserving line breaks and staying
+    under the per-request cap. Best-effort: returns the original text if the
+    backup itself fails, so the pipeline never crashes."""
+    if not text or not text.strip():
+        return text
+    try:
+        out = []
+        for line in text.split("\n"):
+            if not line.strip():
+                out.append("")
+                continue
+            if len(line) <= _MYMEMORY_LIMIT:
+                out.append(_mymemory_get(line, source, target))
+                continue
+            # Long line: translate in <=_MYMEMORY_LIMIT-char, space-aligned pieces.
+            pieces, cur = [], ""
+            for word in line.split(" "):
+                if cur and len(cur) + 1 + len(word) > _MYMEMORY_LIMIT:
+                    pieces.append(cur)
+                    cur = word
+                else:
+                    cur = f"{cur} {word}".strip()
+            if cur:
+                pieces.append(cur)
+            out.append(" ".join(_mymemory_get(p, source, target) for p in pieces))
+        return "\n".join(out)
+    except Exception:
+        logger.exception("MyMemory backup translation failed (%s->%s)", source, target)
+        return text
+
+
 def _translate(text: str, target: str, source: str = "uk") -> str:
-    """Translate a single chunk; format_='text' preserves newlines."""
-    result = _get_client().translate(
-        text, source_language=source, target_language=target, format_="text"
-    )
-    return html.unescape(result["translatedText"])
+    """Translate a single chunk; format_='text' preserves newlines. Falls back to
+    the MyMemory backup if Google Translate fails."""
+    try:
+        result = _get_client().translate(
+            text, source_language=source, target_language=target, format_="text"
+        )
+        return html.unescape(result["translatedText"])
+    except Exception:
+        logger.warning("Google Translate failed (%s->%s); using MyMemory backup", source, target)
+        return _mymemory_translate(text, source, target)
 
 
 def _translate_batch(texts: list, target: str, source: str = "uk") -> list:
-    """Translate a list of chunks in one API call; returns a list of strings."""
+    """Translate a list of chunks in one API call; returns a list of strings.
+    Falls back to translating each chunk via the MyMemory backup on failure."""
     if not texts:
         return []
-    res = _get_client().translate(
-        texts, source_language=source, target_language=target, format_="text"
-    )
-    if isinstance(res, dict):
-        res = [res]
-    return [html.unescape(r["translatedText"]) for r in res]
+    try:
+        res = _get_client().translate(
+            texts, source_language=source, target_language=target, format_="text"
+        )
+        if isinstance(res, dict):
+            res = [res]
+        return [html.unescape(r["translatedText"]) for r in res]
+    except Exception:
+        logger.warning("Google batch translate failed (%s->%s); using MyMemory backup", source, target)
+        return [_mymemory_translate(t, source, target) for t in texts]
 
 
 def _value_after_colon(line: str) -> str:
@@ -105,7 +170,7 @@ def translate_uk(text: str, lang: str = "fa", link_url: str | None = None) -> st
 
     German template + German values for the top (title, company, salary,
     location, category), `lang` for the job description, application link kept.
-    `lang` is one of `_LANGS` ("fa" Persian, "az" Azerbaijani).
+    `lang` is one of `_LANGS` (currently only "fa" Persian).
 
     `link_url` is the authoritative application URL extracted from the message's
     Telegram entities (see main.py). The source channel sometimes hides the link

@@ -50,18 +50,6 @@ For security reasons, `.env` files are not uploaded to Google Cloud. If you need
 
 Your bot will restart instantly with the new configuration.
 
-### Enabling the Azerbaijani channel
-
-The bot can post a parallel Azerbaijani version of every job alongside the Persian
-one. It is **off by default**. To turn it on, add one environment variable (same
-rules as the Persian destinations):
-
-- `DEST_CHANNEL_AZ` — a single Azerbaijani channel that receives every source's posts, **or**
-- `DEST_CHANNELS_AZ` — a comma-separated list paired 1:1 by position with `SOURCE_CHANNELS`.
-
-The bot account must be an **admin** of each Azerbaijani destination, exactly like the
-Persian channels. Leaving both unset keeps the bot Persian-only.
-
 ### Missed-message catch-up (downtime recovery)
 
 If the bot is offline for a while, it must not silently drop posts made meanwhile.
