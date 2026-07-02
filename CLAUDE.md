@@ -30,6 +30,8 @@ A single event handler in [main.py](main.py) drives everything:
 ```
 new message in any SOURCE_CHANNELS
   → filter.is_job_posting()      # keep only structured job posts
+  → filter.blocked_reason()      # drop posts with a Telegram/Facebook link or phone
+                                 #   number in the poster's text or the apply link
   → for each configured language (fa, az):
       → translator.translate_uk(text, lang)   # Google Translate, uk → lang
       → poster.post_to_channel(text, dest)    # Telegram Bot API → routed DEST
@@ -56,7 +58,7 @@ Two Telethon clients run in one process:
 |------|----------------|-------|
 | [main.py](main.py) | Entry point, event loop, both Telethon clients, admin commands, Cloud Run health server | The only place that wires modules together |
 | [config.py](config.py) | Loads + validates env vars | `_require` fails fast in prod; `_optional` relaxes in `DEBUG_MODE` |
-| [filter.py](filter.py) | `is_job_posting()` — emoji-marker heuristic | Pure function, no I/O. Easiest place to tune behavior |
+| [filter.py](filter.py) | `is_job_posting()` — emoji-marker heuristic; `blocked_reason()` / `has_blocked_content()` — off-channel-contact drop rule (Telegram/Facebook links, phone numbers) | Pure functions, no I/O. Easiest place to tune behavior. `blocked_reason` is deliberately broad (matches bare words `telegram`/`facebook` too) |
 | [translator.py](translator.py) | `translate_uk(text, lang)` — Google Translate wrapper + pre/post-processing | Per-language settings in `_LANGS` (target code, labels, RTL). `translate_uk_to_fa` is a back-compat alias. Top fields always go to German; only the description + labels are language-specific |
 | [poster.py](poster.py) | `post_to_channel()` — sends HTML message via Bot API | Uses stdlib `urllib`, no extra deps |
 | [state.py](state.py) | Durable per-channel `last_seen` marker in GCS, for downtime catch-up | Fail-safe: storage errors are logged, never raised. Needs `STATE_BUCKET` |
@@ -100,13 +102,19 @@ python auth.py                           # one-time: generate session string (lo
 cp .env.example .env                     # then fill in values
 python main.py                           # run the bot locally
 
+# tests (filter rules). pytest only — filter.py is pure stdlib, no bot deps needed.
+python -m venv .venv && .venv/bin/pip install pytest
+.venv/bin/pytest
+
 # deploy to Cloud Run (builds container via Cloud Build, ~2-3 min)
 gcloud run deploy jobs-bot --source . --region europe-west3 \
   --no-cpu-throttling --min-instances=1 --max-instances=1 --allow-unauthenticated
 ```
 
-There is currently **no test suite, linter, or formatter** configured. If you add
-tests, prefer `pytest` and document the command here.
+Tests live in `tests/` and currently cover `filter.py` (the keep/drop rules) via
+`pytest` (config in `pytest.ini`). No linter or formatter is configured. Prefer
+`pytest` for any new tests and keep the pure logic in `filter.py` so it stays
+testable without the Telegram/Google dependencies.
 
 ## Conventions
 
